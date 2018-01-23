@@ -2,6 +2,8 @@ extern crate clap;
 extern crate jxr;
 use clap::{App, Arg};
 use jxr::Items;
+use jxr::render::Renderer;
+use jxr::util::write;
 use std::path::PathBuf;
 
 fn main() {
@@ -34,8 +36,13 @@ fn main() {
     let root_path = PathBuf::from(matches.value_of("path").unwrap());
     let output_path = PathBuf::from(matches.value_of("output_path").unwrap());
 
-    let items = Items::new(&root_path).expect("Error getting items");
-    for item in items.items.into_iter() {
-        item.write(&output_path).unwrap();
+    let renderer = Renderer::new(&root_path).unwrap();
+
+    let items = Items::new(root_path.to_owned(), root_path, output_path).unwrap();
+    for item in items {
+        let item = item.expect("item error");
+        println!("{:?}", item.path);
+        let contents = renderer.render(&item).expect("render error");
+        write(&item.output_path, contents).expect("write error");
     }
 }

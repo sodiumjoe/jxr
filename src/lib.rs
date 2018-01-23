@@ -4,87 +4,197 @@ extern crate handlebars;
 extern crate lazy_static;
 extern crate pulldown_cmark;
 extern crate regex;
-extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
 extern crate serde_yaml;
-extern crate walkdir;
 
 use chrono::prelude::*;
-use error::Error;
-use handlebars::Handlebars;
-use layouts::Layouts;
-use markdown::MarkdownPaths;
+use error::{Error, Result};
 use pulldown_cmark::{html, Parser};
 use regex::Regex;
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::prelude::*;
-use std::path::PathBuf;
-use walkdir::WalkDir;
+use std::fs::{read_dir, ReadDir};
+use std::iter::Peekable;
+use std::path::{Path, PathBuf};
+use util::read_file;
 
-mod markdown;
 mod error;
-pub mod layouts;
+pub mod render;
+pub mod util;
 
-#[derive(Debug, Serialize)]
-pub struct Context {
-    title: Option<String>,
-    body: Option<String>,
-    date: Option<String>,
-    path: String,
+pub struct Items {
+    root_path: PathBuf,
+    output_path: PathBuf,
+    read_dir: ReadDir,
+    current_index: Option<Item>,
+    current_dir: Option<Box<Peekable<Items>>>,
+    current_dir_items: Vec<Item>,
+    default_layout: String,
 }
 
-pub enum Item {
-    Document(DocumentData),
-    Listing(ListingData),
+impl Items {
+    pub fn new(root_path: PathBuf, dir_path: PathBuf, output_path: PathBuf) -> Result<Items> {
+        let read_dir = read_dir(&dir_path)?;
+        let mut default_layout_file_path = dir_path;
+        default_layout_file_path.set_extension("yml");
+
+        let default_layout =
+            get_default_layout(&default_layout_file_path).unwrap_or("default".to_string());
+
+        Ok(Items {
+            root_path,
+            output_path,
+            current_dir: None,
+            current_index: None,
+            current_dir_items: vec![],
+            read_dir,
+            default_layout,
+        })
+    }
+    fn get_next_from_current_dir(&mut self) -> Option<Result<Item>> {
+        loop {
+            let next = if let Some(ref mut current_dir) = self.current_dir {
+                current_dir.next()
+            } else {
+                None
+            };
+            match next {
+                Some(next) => {
+                    if let Ok(ref next) = next {
+                        let path: &Path = next.path.as_ref();
+                        if let Some("index") = path.file_stem().and_then(|stem| stem.to_str()) {
+                            self.current_index = Some(next.clone());
+                            continue;
+                        } else {
+                            self.current_dir_items.push(next.clone());
+                        }
+                    }
+                    break Some(next);
+                }
+                None => {
+                    if self.current_index.is_none() {
+                        break None;
+                    }
+                    self.current_dir = None;
+                    let index = self.current_index.clone().map(|mut i| {
+                        i.items = self.current_dir_items.clone();
+                        Ok(i)
+                    });
+                    self.current_index = None;
+                    break index;
+                }
+            }
+        }
+    }
+
+    fn get_next_from_read_dir(&mut self) -> Option<Result<Item>> {
+        loop {
+            let entry = self.read_dir.next();
+            if entry.is_none() {
+                break None;
+            }
+
+            let entry = entry.unwrap();
+            match entry {
+                Ok(entry) => {
+                    let path = entry.path();
+
+                    // skip dotfiles
+                    if path.file_name()
+                        .map(|f| f.to_str().map(|f| f.starts_with(".")).unwrap_or(false))
+                        .unwrap_or(false)
+                    {
+                        continue;
+
+                    // recurse into directories
+                    } else if path.is_dir() {
+                        let items = Items::new(
+                            self.root_path.to_owned(),
+                            path,
+                            self.output_path.to_owned(),
+                        );
+
+                        match items {
+                            Ok(items) => {
+                                let mut items = items.peekable();
+                                if items.peek().is_none() {
+                                    continue;
+                                } else {
+                                    self.current_dir = Some(Box::new(items));
+                                    break self.get_next_from_current_dir();
+                                }
+                            }
+                            Err(e) => break Some(Err(e)),
+                        }
+
+                    // skip non-markdown files
+                    // @todo: copy assets
+                    } else if path.extension().map(|e| e != "md").unwrap_or(true) {
+                        continue;
+                    } else {
+                        break Some(Item::new(
+                            &path,
+                            &self.root_path,
+                            self.default_layout.to_owned(),
+                            self.output_path.to_owned(),
+                        ));
+                    }
+                }
+                Err(e) => break Some(Err(Error::Io(e))),
+            }
+        }
+    }
+}
+
+impl Iterator for Items {
+    type Item = Result<Item>;
+    fn next(&mut self) -> Option<Result<Item>> {
+        let next_from_current_dir = self.get_next_from_current_dir();
+        if next_from_current_dir.is_some() {
+            next_from_current_dir
+        } else {
+            self.get_next_from_read_dir()
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DefaultMetaData {
+    layout: String,
+}
+
+fn get_default_layout(path: &PathBuf) -> Result<String> {
+    let contents = read_file(path)?;
+    let DefaultMetaData { layout } = serde_yaml::from_str(&contents)?;
+    Ok(layout)
+}
+
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub date: Option<Date<Utc>>,
+    pub path: PathBuf,
+    pub output_path: PathBuf,
+    pub layout: String,
+    pub input_file_path: PathBuf,
+    pub items: Vec<Item>,
 }
 
 impl Item {
-    pub fn write(&self, path: &PathBuf) -> Result<(), Error> {
-        match *self {
-            Item::Document(ref d) => d.write(path),
-            Item::Listing(ref l) => l.write(path),
-        }
-    }
-    pub fn get_path(&self) -> &PathBuf {
-        match *self {
-            Item::Document(ref d) => &d.path,
-            Item::Listing(ref l) => &l.path,
-        }
-    }
-    pub fn get_file_path(&self) -> &PathBuf {
-        match *self {
-            Item::Document(ref d) => &d.file_path,
-            Item::Listing(ref l) => &l.file_path,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DocumentData {
-    pub file_path: PathBuf,
-    pub path: PathBuf,
-    pub date: Option<String>,
-    pub contents: String,
-    pub title: String,
-}
-
-impl DocumentData {
     pub fn new(
-        file_path: PathBuf,
+        input_file_path: &PathBuf,
         root_path: &PathBuf,
-        layouts: &HashMap<String, Handlebars>,
-        defaults: &HashMap<String, String>,
-    ) -> Result<DocumentData, Error> {
-        let mut contents = String::new();
-        File::open(file_path.to_owned())?.read_to_string(&mut contents)?;
+        default_layout: String,
+        mut output_path: PathBuf,
+    ) -> Result<Item> {
+        let contents = read_file(&input_file_path)?;
         let mut contents = contents.split("---\n").skip(1);
-
         let front_matter = contents.next().ok_or("Error parsing yaml front matter")?;
+
         let ItemMetaData { title, layout } = serde_yaml::from_str(&front_matter)?;
+
+        let ParsedPath { date, path } = parse_path(&input_file_path, &root_path)?;
+        output_path.push(&path);
 
         let parser = Parser::new(contents
             .next()
@@ -92,184 +202,16 @@ impl DocumentData {
         let mut body = String::new();
         html::push_html(&mut body, parser);
 
-        let default_key = file_path
-            .parent()
-            .ok_or("Error searching for defaults.yml")?
-            .to_str()
-            .ok_or("Error searching for defaults.yml")?
-            .to_string();
-        let default = defaults.get(&default_key);
-        let default = default.unwrap_or(&"default".to_string()).to_string();
-        let layout = layout.unwrap_or(default);
-        let ParsedPath { date, path } = parse_path(&file_path, &root_path)?;
-        let date =
-            date.map(|date| (format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day())));
-        let mut context = Context {
-            title: Some(title.to_owned()),
-            body: Some(body),
-            date: date.to_owned(),
-            path: path.to_owned().to_str().ok_or("path")?.to_string(),
-        };
-        context.body = Some(layouts
-            .get(&layout)
-            .ok_or("Error getting layout defined in file")?
-            .render(layout.as_str(), &context)?);
-        let contents = layouts
-            .get("layout")
-            .ok_or("Error getting root layout")?
-            .render("layout", &context)?;
-
-        Ok(DocumentData {
-            file_path,
-            path,
+        Ok(Item {
+            title: Some(title),
             date,
-            contents,
-            title,
+            layout: layout.unwrap_or(default_layout),
+            body: Some(body),
+            path,
+            output_path,
+            input_file_path: input_file_path.to_owned(),
+            items: vec![],
         })
-    }
-
-    pub fn write(&self, output_path: &PathBuf) -> Result<(), Error> {
-        let file_path = output_path.join(&self.path);
-        create_dir(&file_path
-            .parent()
-            .ok_or("problem with file parent dir")?
-            .to_path_buf())?;
-        let mut file = File::create(file_path)?;
-        file.write_all(self.contents.as_bytes())
-            .expect("Error writing file");
-        Ok(())
-    }
-}
-
-pub struct ListingData {
-    pub file_path: PathBuf,
-    pub path: PathBuf,
-    pub contents: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ListingContext {
-    items: Vec<Context>,
-}
-
-impl ListingData {
-    pub fn new(
-        file_path: String,
-        root_path: &PathBuf,
-        layout: Handlebars,
-        root_layout: &Handlebars,
-        items: &Vec<Item>,
-    ) -> Result<ListingData, Error> {
-        // let mut listing_items = Vec::new();
-        let listing_items: Result<Vec<Context>, Error> = items
-            .into_iter()
-            .filter(|&item| item.get_file_path().starts_with(&file_path))
-            .filter_map(|ref item| match *item {
-                &Item::Document(ref item) => Some(item),
-                _ => None,
-            })
-            .map(|item| {
-                Ok(Context {
-                    title: Some(item.title.to_owned()),
-                    path: item.path.to_str().ok_or("path")?.to_string(),
-                    body: None,
-                    date: item.date.to_owned(),
-                })
-            })
-            .collect();
-        let mut listing_items = listing_items?;
-        listing_items.sort_unstable_by(|ref a, ref b| match &b.date {
-            &Some(ref b) => match &a.date {
-                &Some(ref a) => b.cmp(a),
-                _ => Ordering::Greater,
-            },
-            _ => Ordering::Less,
-        });
-        let context = ListingContext {
-            items: listing_items,
-        };
-        let contents = layout.render(file_path.as_str(), &context)?;
-        let file_path = PathBuf::from(file_path);
-        let path = file_path.join("index");
-        convert_path(&root_path, &path).map(|path| {
-            let context = Context {
-                title: None,
-                body: Some(contents),
-                date: None,
-                path: path.to_owned().to_str().ok_or("path")?.to_string(),
-            };
-            let contents = root_layout.render("layout", &context)?;
-            Ok(ListingData {
-                file_path,
-                path,
-                contents,
-            })
-        })?
-    }
-
-    pub fn write(&self, output_path: &PathBuf) -> Result<(), Error> {
-        let file_path = output_path.join(&self.path);
-        create_dir(&file_path
-            .parent()
-            .ok_or("problem with file parent dir")?
-            .to_path_buf())?;
-        let mut file = File::create(file_path)?;
-        file.write_all(self.contents.as_bytes())
-            .expect("Error writing file");
-        Ok(())
-    }
-}
-
-pub struct Items {
-    pub items: Vec<Item>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Defaults {
-    layout: String,
-}
-
-impl Items {
-    pub fn new(root_path: &PathBuf) -> Result<Items, Error> {
-        let mut defaults = HashMap::new();
-        for entry in WalkDir::new(&root_path) {
-            let entry = entry?;
-            let file_path = entry.path();
-            if let Some(file_name) = file_path.file_name() {
-                if file_name == "defaults.yml" {
-                    let mut contents = String::new();
-                    File::open(file_path.to_owned())?.read_to_string(&mut contents)?;
-                    let key = file_path
-                        .parent()
-                        .ok_or("Error getting parent")?
-                        .to_str()
-                        .ok_or("Error getting parent")?
-                        .to_string();
-                    let Defaults { layout } = serde_yaml::from_str(&contents)?;
-                    defaults.insert(key, layout);
-                }
-            }
-        }
-        let paths = MarkdownPaths::new(&root_path);
-        let Layouts { listings, layouts } = Layouts::new(&root_path)?;
-        let mut items: Vec<Item> = Vec::new();
-        for path in paths {
-            let path = path?;
-            let item = DocumentData::new(path, &root_path, &layouts, &defaults)
-                .map(|d| Item::Document(d))?;
-            items.push(item);
-        }
-        for (path, layout) in listings {
-            let item = Item::Listing(ListingData::new(
-                path,
-                &root_path,
-                layout,
-                layouts.get("layout").ok_or("Error getting root layout")?,
-                &items,
-            )?);
-            items.push(item);
-        }
-        Ok(Items { items })
     }
 }
 
@@ -284,27 +226,7 @@ struct ParsedPath {
     path: PathBuf,
 }
 
-fn convert_path(root_path: &PathBuf, path: &PathBuf) -> Result<PathBuf, Error> {
-    let mut path = path.strip_prefix(root_path
-        .to_str()
-        .ok_or("Error casting current dir to str")?)?
-        .to_path_buf();
-    path.set_extension("html");
-    Ok(path)
-}
-
-fn create_dir(path: &PathBuf) -> Result<PathBuf, Error> {
-    let mut current = PathBuf::new();
-    for path in path.components() {
-        current.push(path.as_os_str());
-        if !current.exists() {
-            fs::create_dir(&current)?;
-        }
-    }
-    Ok(current)
-}
-
-fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath, Error> {
+fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath> {
     lazy_static! {
         static ref RE: Regex = Regex::new(r"(\d{4})-(\d{2})-(\d{2})-(.+)")
             .expect("Error creating regex");
@@ -352,5 +274,11 @@ fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath, Error> 
         }
     };
 
-    convert_path(&root_path, &path).map(|path| ParsedPath { path, date })
+    let mut path = path.strip_prefix(root_path
+        .to_str()
+        .ok_or("Error casting current dir to str")?)?
+        .to_path_buf();
+    path.set_extension("html");
+
+    Ok(ParsedPath { path, date })
 }

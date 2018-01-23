@@ -5,12 +5,13 @@ use std::fmt;
 use std::io;
 use std::num;
 use std::path;
-use walkdir;
+use std::result;
+
+pub type Result<T> = result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    WalkDir(walkdir::Error),
     Serde(serde_yaml::Error),
     Item(ItemError),
     Handlebars(handlebars::RenderError),
@@ -40,7 +41,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::Io(ref err) => write!(f, "IO error: {}", err),
-            Error::WalkDir(ref err) => write!(f, "WalkDir error: {}", err),
             Error::Serde(ref err) => write!(f, "Serde error: {}", err),
             Error::Item(ref err) => write!(f, "Error: {}", err),
             Error::Handlebars(ref err) => write!(f, "Handlebars error: {}", err),
@@ -55,7 +55,6 @@ impl error::Error for Error {
     fn description(&self) -> &str {
         match *self {
             Error::Io(ref err) => err.description(),
-            Error::WalkDir(ref err) => err.description(),
             Error::Serde(ref err) => err.description(),
             Error::Item(ref err) => err.description(),
             Error::Handlebars(ref err) => err.description(),
@@ -68,7 +67,6 @@ impl error::Error for Error {
     fn cause(&self) -> Option<&error::Error> {
         match *self {
             Error::Io(ref err) => Some(err),
-            Error::WalkDir(ref err) => Some(err),
             Error::Serde(ref err) => Some(err),
             Error::Item(ref err) => Some(err),
             Error::Handlebars(ref err) => Some(err),
@@ -82,12 +80,6 @@ impl error::Error for Error {
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
         Error::Io(err)
-    }
-}
-
-impl From<walkdir::Error> for Error {
-    fn from(err: walkdir::Error) -> Error {
-        Error::WalkDir(err)
     }
 }
 
@@ -121,8 +113,16 @@ impl From<path::StripPrefixError> for Error {
     }
 }
 
+impl From<String> for Error {
+    fn from(err: String) -> Error {
+        Error::Item(ItemError { string: err })
+    }
+}
+
 impl<'a> From<&'a str> for Error {
     fn from(err: &str) -> Error {
-        Error::Item(ItemError { string: String::from(err) })
+        Error::Item(ItemError {
+            string: String::from(err),
+        })
     }
 }
