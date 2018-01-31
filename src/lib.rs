@@ -14,6 +14,7 @@ use pulldown_cmark::{html, Parser};
 use regex::Regex;
 use std::fs::{read_dir, ReadDir};
 use std::iter::Peekable;
+use std::mem::replace;
 use std::path::{Path, PathBuf};
 use util::read_file;
 
@@ -21,6 +22,7 @@ mod error;
 pub mod render;
 pub mod util;
 
+#[derive(Debug)]
 pub struct Items {
     root_path: PathBuf,
     output_path: PathBuf,
@@ -74,11 +76,12 @@ impl Items {
                     if self.current_index.is_none() {
                         break None;
                     }
-                    self.current_dir = None;
                     let index = self.current_index.clone().map(|mut i| {
-                        i.items = self.current_dir_items.clone();
+                        i.items = replace(&mut self.current_dir_items, vec![]);
                         Ok(i)
                     });
+                    println!("{:?}", index);
+                    self.current_dir = None;
                     self.current_index = None;
                     break index;
                 }
@@ -173,6 +176,7 @@ pub struct Item {
     pub title: Option<String>,
     pub body: Option<String>,
     pub date: Option<Date<Utc>>,
+    pub description: Option<String>,
     pub path: PathBuf,
     pub output_path: PathBuf,
     pub layout: String,
@@ -191,7 +195,11 @@ impl Item {
         let mut contents = contents.split("---\n").skip(1);
         let front_matter = contents.next().ok_or("Error parsing yaml front matter")?;
 
-        let ItemMetaData { title, layout } = serde_yaml::from_str(&front_matter)?;
+        let ItemMetaData {
+            title,
+            description,
+            layout,
+        } = serde_yaml::from_str(&front_matter)?;
 
         let ParsedPath { date, path } = parse_path(&input_file_path, &root_path)?;
         output_path.push(&path);
@@ -205,6 +213,7 @@ impl Item {
         Ok(Item {
             title: Some(title),
             date,
+            description,
             layout: layout.unwrap_or(default_layout),
             body: Some(body),
             path,
@@ -218,6 +227,7 @@ impl Item {
 #[derive(Debug, Serialize, Deserialize)]
 struct ItemMetaData {
     title: String,
+    description: Option<String>,
     layout: Option<String>,
 }
 

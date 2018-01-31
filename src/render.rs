@@ -12,6 +12,7 @@ struct RenderContext {
     title: Option<String>,
     body: Option<String>,
     date: Option<String>,
+    description: Option<String>,
     path: PathBuf,
     items: Vec<RenderContext>,
 }
@@ -21,6 +22,7 @@ impl RenderContext {
         let &Item {
             ref title,
             ref date,
+            ref description,
             layout: ref _layout,
             ref body,
             ref path,
@@ -42,6 +44,7 @@ impl RenderContext {
         RenderContext {
             title: title.to_owned(),
             date,
+            description: description.to_owned(),
             body: body.to_owned(),
             items,
             path: path.to_owned(),
