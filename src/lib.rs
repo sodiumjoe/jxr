@@ -80,7 +80,6 @@ impl Items {
                         i.items = replace(&mut self.current_dir_items, vec![]);
                         Ok(i)
                     });
-                    println!("{:?}", index);
                     self.current_dir = None;
                     self.current_index = None;
                     break index;
@@ -193,7 +192,10 @@ impl Item {
     ) -> Result<Item> {
         let contents = read_file(&input_file_path)?;
         let mut contents = contents.split("---\n").skip(1);
-        let front_matter = contents.next().ok_or("Error parsing yaml front matter")?;
+        let front_matter = contents.next().ok_or(format!(
+            "Error parsing yaml front matter: {:?}",
+            &input_file_path
+        ))?;
 
         let ItemMetaData {
             title,
@@ -201,7 +203,7 @@ impl Item {
             layout,
         } = serde_yaml::from_str(&front_matter)?;
 
-        let ParsedPath { date, path } = parse_path(&input_file_path, &root_path)?;
+        let ParsedPath { date, mut path } = parse_path(&input_file_path, &root_path)?;
         output_path.push(&path);
 
         let parser = Parser::new(contents
@@ -209,6 +211,8 @@ impl Item {
             .ok_or("Error extracting markdown from file")?);
         let mut body = String::new();
         html::push_html(&mut body, parser);
+
+        path.set_extension("");
 
         Ok(Item {
             title: Some(title),
@@ -269,9 +273,9 @@ fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath> {
         let mut path = path.parent()
             .ok_or("Error getting file's parent dir")?
             .to_path_buf();
-        path.push(year.to_string());
-        path.push(month.to_string());
-        path.push(day.to_string());
+        path.push(format!("{:04}", year));
+        path.push(format!("{:02}", month));
+        path.push(format!("{:02}", day));
         path.push(slug);
         ParsedPath {
             date: Some(Utc.ymd(year, month, day)),

@@ -41,7 +41,6 @@ fn main() {
     let items = Items::new(root_path.to_owned(), root_path, output_path).unwrap();
     for item in items {
         let item = item.expect("item error");
-        println!("{:?}", item.path);
         let contents = renderer.render(&item).expect("render error");
         write(&item.output_path, contents).expect("write error");
     }
