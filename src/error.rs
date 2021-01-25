@@ -52,19 +52,7 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Io(ref err) => err.description(),
-            Error::Serde(ref err) => err.description(),
-            Error::Item(ref err) => err.description(),
-            Error::Handlebars(ref err) => err.description(),
-            Error::ParseInt(ref err) => err.description(),
-            Error::StripPrefix(ref err) => err.description(),
-            Error::HandlebarsTemplate(ref err) => err.description(),
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Io(ref err) => Some(err),
             Error::Serde(ref err) => Some(err),

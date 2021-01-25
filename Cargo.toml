@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Joe Moon <joe@xoxomoon.com>"]
 
 [dependencies]
-pulldown-cmark = "0.0.11"
+pulldown-cmark = "0.8.0"
 clap = "2.29.0"
 serde = "1"
 serde_derive = "1"

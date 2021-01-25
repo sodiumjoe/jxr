@@ -10,7 +10,7 @@ extern crate serde_yaml;
 
 use chrono::prelude::*;
 use error::{Error, Result};
-use pulldown_cmark::{html, Parser};
+use pulldown_cmark::{html, Options, Parser};
 use regex::Regex;
 use std::fs::{read_dir, ReadDir};
 use std::iter::Peekable;
@@ -101,7 +101,8 @@ impl Items {
                     let path = entry.path();
 
                     // skip dotfiles
-                    if path.file_name()
+                    if path
+                        .file_name()
                         .map(|f| f.to_str().map(|f| f.starts_with(".")).unwrap_or(false))
                         .unwrap_or(false)
                     {
@@ -206,16 +207,39 @@ impl Item {
         let ParsedPath { date, mut path } = parse_path(&input_file_path, &root_path)?;
         output_path.push(&path);
 
-        let parser = Parser::new(contents
-            .next()
-            .ok_or("Error extracting markdown from file")?);
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_SMART_PUNCTUATION);
+        let parser = Parser::new_ext(
+            contents
+                .next()
+                .ok_or("Error extracting markdown from file")?,
+            options,
+        );
         let mut body = String::new();
         html::push_html(&mut body, parser);
+
+        let title_parser = Parser::new_ext(&title, options);
+        let mut formatted_title = String::new();
+        html::push_html(&mut formatted_title, title_parser);
+
+        lazy_static! {
+            static ref RE: Regex = Regex::new(r"<p>(.*)</p>").expect("Error creating regex");
+        }
+
+        formatted_title = if let Some(captures) = RE.captures(&formatted_title) {
+            captures
+                .get(1)
+                .ok_or("error parsing title")?
+                .as_str()
+                .to_string()
+        } else {
+            formatted_title
+        };
 
         path.set_extension("");
 
         Ok(Item {
-            title: Some(title),
+            title: Some(formatted_title),
             date,
             description,
             layout: layout.unwrap_or(default_layout),
@@ -242,11 +266,12 @@ struct ParsedPath {
 
 fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath> {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"(\d{4})-(\d{2})-(\d{2})-(.+)")
-            .expect("Error creating regex");
+        static ref RE: Regex =
+            Regex::new(r"(\d{4})-(\d{2})-(\d{2})-(.+)").expect("Error creating regex");
     }
     let path = path.to_owned();
-    let stem = path.file_stem()
+    let stem = path
+        .file_stem()
         .ok_or("Error extracting file stem")?
         .to_str()
         .ok_or("Error casting file stem")?;
@@ -270,7 +295,8 @@ fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath> {
             .get(4)
             .ok_or("Error parsing slug from file name")?
             .as_str();
-        let mut path = path.parent()
+        let mut path = path
+            .parent()
             .ok_or("Error getting file's parent dir")?
             .to_path_buf();
         path.push(format!("{:04}", year));
@@ -288,9 +314,12 @@ fn parse_path(path: &PathBuf, root_path: &PathBuf) -> Result<ParsedPath> {
         }
     };
 
-    let mut path = path.strip_prefix(root_path
-        .to_str()
-        .ok_or("Error casting current dir to str")?)?
+    let mut path = path
+        .strip_prefix(
+            root_path
+                .to_str()
+                .ok_or("Error casting current dir to str")?,
+        )?
         .to_path_buf();
     path.set_extension("html");
 
